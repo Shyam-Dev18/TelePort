@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Media Drive Bot</title>
+  <style>
+    :root {
+      --bg: #f6f8fb;
+      --card: #ffffff;
+      --text: #121826;
+      --muted: #5d6472;
+      --primary: #0c6cf2;
+      --danger: #c62828;
+      --success: #1f8f4e;
+      --border: #e6e9ef;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: radial-gradient(circle at 20% 0%, #ecf3ff, var(--bg));
+      color: var(--text);
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+    }
+    .card {
+      width: min(760px, 100%);
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 24px;
+      box-shadow: 0 8px 30px rgba(16, 24, 40, 0.08);
+    }
+    h1 { margin: 0 0 8px; font-size: 1.6rem; }
+    p { margin: 0 0 18px; color: var(--muted); }
+    form { display: flex; gap: 12px; flex-wrap: wrap; }
+    input, select {
+      flex: 1;
+      min-width: 260px;
+      padding: 12px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      font-size: 0.98rem;
+    }
+    .hidden { display: none; }
+    button {
+      border: 0;
+      border-radius: 10px;
+      padding: 12px 16px;
+      background: var(--primary);
+      color: white;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .secondary {
+      background: #6b7280;
+    }
+    .danger {
+      background: #c62828;
+    }
+    button:disabled { opacity: .6; cursor: wait; }
+    .panel {
+      margin-top: 16px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 12px;
+      display: none;
+    }
+    .progress {
+      width: 100%;
+      height: 12px;
+      background: #eef1f7;
+      border-radius: 999px;
+      overflow: hidden;
+      margin-top: 10px;
+    }
+    .bar {
+      width: 0;
+      height: 100%;
+      background: linear-gradient(90deg, #0c6cf2, #2f8cff);
+      transition: width .25s ease;
+    }
+    .error { color: var(--danger); }
+    .success { color: var(--success); }
+    .meta { color: var(--muted); font-size: 0.92rem; }
+    @media (max-width: 720px) {
+      .card {
+        padding: 16px;
+      }
+      input, select, button {
+        min-width: 100%;
+        width: 100%;
+      }
+    }
+  </style>
+</head>
+<body>
+  <section class="card">
+    <h1>Shyam's TelePort.Bot</h1>
+    <p>Download media and upload to <strong>{{ upload_destination }}</strong>. Max size: <strong>{{ max_size_mb }}MB</strong>.</p>
+
+    <form id="downloadForm">
+      <input type="url" id="url" placeholder="Paste media URL" required />
+      <input type="text" id="fileName" placeholder="File name (auto-filled from title)" />
+      <input type="url" id="thumbnailUrl" class="hidden" placeholder="JPEG thumbnail URL (max 320px)" />
+      <select id="destination" aria-label="Upload destination">
+        <option value="telegram">Telegram</option>
+        <option value="google_drive">Google Drive</option>
+      </select>
+      <select id="resolution" class="hidden" aria-label="YouTube resolution">
+        <option value="720">720p</option>
+        <option value="1080" selected>1080p</option>
+        <option value="1440">2K</option>
+      </select>
+      <button id="submitBtn" type="submit">Start</button>
+      <button id="cancelBtn" type="button" class="danger" disabled>Cancel</button>
+    </form>
+
+    <div class="panel" id="statusPanel">
+      <div id="statusText" class="meta">Waiting...</div>
+      <div class="progress"><div class="bar" id="progressBar"></div></div>
+      <div id="result" class="meta" style="margin-top:10px"></div>
+    </div>
+  </section>
+
+  <script>
+    const form = document.getElementById('downloadForm');
+    const urlInput = document.getElementById('url');
+    const fileNameInput = document.getElementById('fileName');
+    const destinationInput = document.getElementById('destination');
+    const thumbnailUrlInput = document.getElementById('thumbnailUrl');
+    const resolutionInput = document.getElementById('resolution');
+    const submitBtn = document.getElementById('submitBtn');
+    const cancelBtn = document.getElementById('cancelBtn');
+    const statusPanel = document.getElementById('statusPanel');
+    const statusText = document.getElementById('statusText');
+    const progressBar = document.getElementById('progressBar');
+    const result = document.getElementById('result');
+
+    let pollTimer = null;
+    let currentJobId = null;
+    let infoFetchTimer = null;
+    let infoRequestToken = 0;
+    let autoFilledName = '';
+    const DESTINATION_KEY = 'tele-port.destination';
+    const defaultDestination = '{{ upload_destination }}';
+
+    function setStatus(text, className = 'meta') {
+      statusText.className = className;
+      statusText.textContent = text;
+    }
+
+    function clearPolling() {
+      if (pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+      }
+    }
+
+    function normalizeDestination(value) {
+      return value === 'google_drive' ? 'google_drive' : 'telegram';
+    }
+
+    function setRunningState(running) {
+      submitBtn.disabled = running;
+      cancelBtn.disabled = !running;
+      urlInput.disabled = running;
+      fileNameInput.disabled = running;
+      destinationInput.disabled = running;
+      thumbnailUrlInput.disabled = running;
+      resolutionInput.disabled = running;
+    }
+
+    function clearFormAfterTerminalState() {
+      clearTimeout(infoFetchTimer);
+      urlInput.value = '';
+      fileNameInput.value = '';
+      thumbnailUrlInput.value = '';
+      autoFilledName = '';
+      resolutionInput.value = '1080';
+      resolutionInput.classList.add('hidden');
+      thumbnailUrlInput.classList.add('hidden');
+      thumbnailUrlInput.required = false;
+    }
+
+    async function pollStatus(jobId) {
+      try {
+        const res = await fetch(`/status/${jobId}`);
+        if (!res.ok) throw new Error('Status check failed');
+        const data = await res.json();
+
+        progressBar.style.width = `${data.progress}%`;
+        setStatus(`${data.status.toUpperCase()}: ${data.detail || data.stage}`);
+
+        if (data.status === 'completed') {
+          clearPolling();
+          currentJobId = null;
+          setRunningState(false);
+          const safeUrl = data.result_url || '#';
+          result.className = 'success';
+          result.innerHTML = `Uploaded: <a href="${safeUrl}" target="_blank" rel="noopener">${safeUrl}</a>`;
+          clearFormAfterTerminalState();
+        } else if (data.status === 'failed' || data.status === 'canceled') {
+          clearPolling();
+          currentJobId = null;
+          setRunningState(false);
+          if (data.status === 'canceled') {
+            setStatus('CANCELED: Operation stopped by user');
+            result.className = 'meta';
+            result.textContent = data.detail || 'Canceled by user';
+            clearFormAfterTerminalState();
+          } else {
+            setStatus(data.error || 'Failed', 'error');
+            result.className = 'error';
+            result.textContent = data.detail || 'Processing failed';
+          }
+        }
+      } catch (err) {
+        clearPolling();
+        currentJobId = null;
+        setRunningState(false);
+        setStatus('Polling error', 'error');
+        result.className = 'error';
+        result.textContent = err.message;
+      }
+    }
+
+    function isYoutubeUrl(rawUrl) {
+      try {
+        const parsed = new URL(rawUrl);
+        const host = parsed.hostname.toLowerCase();
+        return (
+          host === 'youtu.be' ||
+          host.endsWith('.youtu.be') ||
+          host === 'youtube.com' ||
+          host.endsWith('.youtube.com') ||
+          host === 'youtube-nocookie.com' ||
+          host.endsWith('.youtube-nocookie.com')
+        );
+      } catch {
+        return false;
+      }
+    }
+
+    function isM3u8Url(rawUrl) {
+      try {
+        const parsed = new URL(rawUrl);
+        return parsed.pathname.toLowerCase().endsWith('.m3u8');
+      } catch {
+        return false;
+      }
+    }
+
+    async function submitDownload(payload) {
+      const res = await fetch('/download', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Request failed');
+      return data;
+    }
+
+    async function fetchMediaInfo(url) {
+      const res = await fetch('/media-info', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url })
+      });
+      if (!res.ok) return null;
+      return await res.json();
+    }
+
+    function toggleResolutionVisibility() {
+      if (isYoutubeUrl(urlInput.value.trim())) {
+        resolutionInput.classList.remove('hidden');
+      } else {
+        resolutionInput.classList.add('hidden');
+      }
+    }
+
+    function toggleThumbnailVisibility() {
+      const needsThumb = normalizeDestination(destinationInput.value) === 'telegram' && isM3u8Url(urlInput.value.trim());
+      if (needsThumb) {
+        thumbnailUrlInput.classList.remove('hidden');
+        thumbnailUrlInput.required = true;
+      } else {
+        thumbnailUrlInput.classList.add('hidden');
+        thumbnailUrlInput.required = false;
+        thumbnailUrlInput.value = '';
+      }
+    }
+
+    async function refreshMediaInfo() {
+      const url = urlInput.value.trim();
+      toggleResolutionVisibility();
+      toggleThumbnailVisibility();
+      if (!url) return;
+      const token = ++infoRequestToken;
+      const info = await fetchMediaInfo(url);
+      if (token !== infoRequestToken) return;
+      if (!info) return;
+      if (!fileNameInput.value.trim()) {
+        fileNameInput.value = info.title || '';
+        autoFilledName = fileNameInput.value;
+      }
+      if (info.is_youtube) {
+        resolutionInput.classList.remove('hidden');
+      } else {
+        resolutionInput.classList.add('hidden');
+      }
+    }
+
+    async function cancelCurrentJob() {
+      if (!currentJobId) return;
+      try {
+        cancelBtn.disabled = true;
+        const res = await fetch(`/cancel/${currentJobId}`, { method: 'POST' });
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          throw new Error(body.detail || 'Cancel request failed');
+        }
+        setStatus('Cancel requested...');
+      } catch (err) {
+        cancelBtn.disabled = false;
+        setStatus(`Cancel failed: ${err.message}`, 'error');
+      }
+    }
+
+    destinationInput.value = normalizeDestination(localStorage.getItem(DESTINATION_KEY) || defaultDestination);
+    destinationInput.addEventListener('change', () => {
+      destinationInput.value = normalizeDestination(destinationInput.value);
+      localStorage.setItem(DESTINATION_KEY, destinationInput.value);
+      toggleThumbnailVisibility();
+    });
+
+    cancelBtn.addEventListener('click', cancelCurrentJob);
+    fileNameInput.addEventListener('input', () => {
+      if (fileNameInput.value.trim() !== autoFilledName) {
+        autoFilledName = '';
+      }
+    });
+    urlInput.addEventListener('blur', refreshMediaInfo);
+    urlInput.addEventListener('input', () => {
+      toggleResolutionVisibility();
+      toggleThumbnailVisibility();
+      if (fileNameInput.value.trim() && fileNameInput.value.trim() === autoFilledName) {
+        fileNameInput.value = '';
+        autoFilledName = '';
+      }
+      clearTimeout(infoFetchTimer);
+      infoFetchTimer = setTimeout(refreshMediaInfo, 450);
+    });
+    toggleResolutionVisibility();
+    toggleThumbnailVisibility();
+    setRunningState(false);
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      clearTimeout(infoFetchTimer);
+      clearPolling();
+      setRunningState(true);
+      statusPanel.style.display = 'block';
+      progressBar.style.width = '0%';
+      result.textContent = '';
+      setStatus('Submitting request...');
+
+      try {
+        const payload = {
+          url: urlInput.value.trim(),
+          upload_destination: normalizeDestination(destinationInput.value),
+        };
+        localStorage.setItem(DESTINATION_KEY, payload.upload_destination);
+
+        const editedName = fileNameInput.value.trim();
+        if (editedName) {
+          payload.file_name = editedName;
+        }
+
+        if (
+          normalizeDestination(destinationInput.value) === 'telegram' &&
+          isM3u8Url(payload.url)
+        ) {
+          const thumb = thumbnailUrlInput.value.trim();
+          if (!thumb) {
+            throw new Error('JPEG thumbnail URL is required for Telegram m3u8 uploads');
+          }
+          payload.thumbnail_url = thumb;
+        }
+
+        const chosen = Number(resolutionInput.value);
+        if (!resolutionInput.classList.contains('hidden') && Number.isInteger(chosen) && chosen > 0) {
+          payload.resolution = chosen;
+        }
+
+        const data = await submitDownload(payload);
+        currentJobId = data.job_id;
+
+        setStatus('Job queued, starting...');
+        pollTimer = setInterval(() => pollStatus(data.job_id), 1500);
+        pollStatus(data.job_id);
+      } catch (err) {
+        currentJobId = null;
+        setRunningState(false);
+        setStatus('Request failed', 'error');
+        result.className = 'error';
+        result.textContent = err.message;
+      }
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,14 @@
+fastapi>=0.112.0,<1.0.0
+uvicorn[standard]>=0.30.0,<1.0.0
+yt-dlp>=2024.8.6
+python-dotenv>=1.0.1,<2.0.0
+google-api-python-client>=2.140.0,<3.0.0
+google-auth>=2.33.0,<3.0.0
+google-auth-httplib2>=0.2.0,<1.0.0
+google-auth-oauthlib>=1.2.1,<2.0.0
+httplib2>=0.22.0,<1.0.0
+pyrogram>=2.0.106,<3.0.0
+tgcrypto>=1.2.5,<2.0.0
+jinja2>=3.1.4,<4.0.0
+python-multipart>=0.0.9,<1.0.0
+pydantic>=2.8.0,<3.0.0

@@ -1,0 +1,35 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Runtime/media artifacts
+downloads/
+media/
+tmp_downloads/
+tmp_media/
+/tmp/teleport/
+
+# Local credentials and secrets
+generated_credentials.json
+*.session
+
+# OS/editor
+.DS_Store
+.idea/
+.vscode/
