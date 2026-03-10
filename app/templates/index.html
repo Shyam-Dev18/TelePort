@@ -48,7 +48,9 @@
         linear-gradient(180deg, #eef4fb 0%, #f8fbff 100%);
     }
     .glass {
-      backdrop-filter: blur(6px);
+      /* backdrop-filter removed: blurring animated content behind a large
+         element forces the browser to re-sample and re-blur on every frame,
+         which was the primary cause of the janky "frame-by-frame" rendering. */
     }
     .field:focus {
       outline: none;
@@ -59,6 +61,7 @@
       background-image: linear-gradient(90deg, rgba(255,255,255,0.0), rgba(255,255,255,0.4), rgba(255,255,255,0.0));
       background-size: 200% 100%;
       animation: sweep 1.6s linear infinite;
+      will-change: background-position;
     }
     @keyframes sweep {
       0% { background-position: 200% 0; }
@@ -81,6 +84,12 @@
       border-radius: 999px;
       transform: translate(-50%, -50%);
       animation: spin 28s linear infinite;
+      /* Promote to its own GPU compositor layer so the spin never touches
+         the main-thread layout and the backdrop-filter (now removed) does
+         not have to re-sample on every frame. */
+      will-change: transform;
+      /* Smooth out the size / position tweaks made by randomizePageOrbits */
+      transition: width 1.8s ease, height 1.8s ease;
     }
     .orbit-ring.r1 { width: 950px; height: 950px; }
     .orbit-ring.r2 { width: 740px; height: 740px; animation-direction: reverse; animation-duration: 22s; }
@@ -148,6 +157,7 @@
       background: transparent;
       transform: translate(-50%, -50%);
       animation: spin 16s linear infinite;
+      will-change: transform;
     }
     .input-ring.rev {
       animation-direction: reverse;
@@ -378,8 +388,9 @@
         ring.style.height = `${size}px`;
         ring.style.left = `${rand(34, 66)}%`;
         ring.style.top = `${rand(48, 70)}%`;
-        ring.style.animationDuration = `${rand(17, 36).toFixed(2)}s`;
-        ring.style.animationDirection = Math.random() > 0.5 ? "normal" : "reverse";
+        // Do NOT touch animationDuration / animationDirection here.
+        // Changing those properties mid-run resets the keyframe position to 0°,
+        // causing a jarring "snap" on every interval tick.
       });
 
       const chips = document.querySelectorAll(".orbit-ring.r1 .platform-chip");
@@ -396,8 +407,7 @@
       rings.forEach((ring) => {
         ring.style.width = `calc(100% + ${rand(24, 110).toFixed(0)}px)`;
         ring.style.height = `${rand(100, 170).toFixed(0)}px`;
-        ring.style.animationDuration = `${rand(10, 22).toFixed(2)}s`;
-        ring.style.animationDirection = Math.random() > 0.5 ? "normal" : "reverse";
+        // Do NOT touch animationDuration / animationDirection here.
       });
 
       const chips = document.querySelectorAll(".input-orbit-layer .input-chip");
@@ -522,12 +532,14 @@
         return;
       }
 
+      const frag = document.createDocumentFragment();
       for (const item of options) {
         const option = document.createElement("option");
         option.value = JSON.stringify({ format_id: item.format_id, audio_format_id: item.audio_format_id });
         option.textContent = `${item.display_index}. ${item.resolution} | ${item.codec_pair} | ${item.filesize_str} | ${item.container.toUpperCase()}`;
-        formatSelect.appendChild(option);
+        frag.appendChild(option);
       }
+      formatSelect.appendChild(frag);
 
       formatWrap.classList.remove("hidden");
       resolutionWrap.classList.add("hidden");
