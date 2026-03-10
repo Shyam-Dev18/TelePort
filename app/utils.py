@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import ipaddress
 import logging
+import re
 import socket
+import unicodedata
 from urllib.parse import urlparse
 
 from fastapi import HTTPException
@@ -67,6 +69,19 @@ def resolve_and_check_hostname(hostname: str, *, allow_private: bool = False) ->
 
 
 def safe_filename(value: str) -> str:
-    keep = [c if c.isalnum() or c in "._-" else "_" for c in value]
-    name = "".join(keep).strip("._")
-    return (name or "media_file")[:120]
+    normalized = unicodedata.normalize("NFKD", value or "")
+    ascii_value = normalized.encode("ascii", "ignore").decode("ascii")
+    # Keep only cross-platform safe characters.
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", ascii_value)
+    cleaned = re.sub(r"_+", "_", cleaned).strip("._-")
+    if not cleaned:
+        cleaned = "media_file"
+    # Avoid reserved Windows device names and dot-only names.
+    reserved = {
+        "con", "prn", "aux", "nul",
+        "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9",
+        "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+    }
+    if cleaned.lower() in reserved:
+        cleaned = f"file_{cleaned}"
+    return cleaned[:120]

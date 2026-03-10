@@ -1,7 +1,9 @@
 #!/usr/bin/env sh
 set -eu
 
-pip install --no-cache-dir --upgrade yt-dlp
+# Note: yt-dlp version is pinned in requirements.txt
+# To upgrade, update requirements.txt and redeploy container
+# Do NOT upgrade on every startup as it wastes resources
 
 exec uvicorn app.main:app \
   --host 0.0.0.0 \

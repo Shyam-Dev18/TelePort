@@ -11,6 +11,8 @@ class DownloadRequest(BaseModel):
     url: HttpUrl
     headers: dict[str, str] | None = None
     resolution: int | None = None
+    format_id: str | None = None
+    audio_format_id: str | None = None
     upload_destination: Literal["telegram", "google_drive"] | None = None
     file_name: str | None = None
     thumbnail_url: HttpUrl | None = None
@@ -33,6 +35,18 @@ class DownloadRequest(BaseModel):
         if value < 144 or value > 4320:
             raise ValueError("Resolution must be between 144 and 4320")
         return value
+
+    @field_validator("format_id", "audio_format_id")
+    @classmethod
+    def validate_format_fields(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        trimmed = value.strip()
+        if not trimmed:
+            return None
+        if len(trimmed) > 40:
+            raise ValueError("Format identifier is too long")
+        return trimmed
 
     @field_validator("file_name")
     @classmethod
@@ -82,3 +96,23 @@ class MediaInfoRequest(BaseModel):
 class MediaInfoResponse(BaseModel):
     title: str
     is_youtube: bool
+
+
+class FormatOption(BaseModel):
+    display_index: int
+    format_id: str
+    audio_format_id: str | None = None
+    resolution: str
+    height: int
+    vcodec_short: str
+    acodec_short: str
+    container: str
+    filesize: int | None = None
+    filesize_str: str
+    codec_pair: str
+
+
+class FormatsResponse(BaseModel):
+    title: str
+    is_youtube: bool
+    formats: list[FormatOption]

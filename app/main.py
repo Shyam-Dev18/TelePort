@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shutil
 import threading
 import uuid
 from dataclasses import dataclass, field
@@ -13,12 +14,15 @@ from urllib.parse import urlparse
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 
 from app.config import get_settings
 from app.downloader import DownloadCancelledError, DownloadFailedError, DownloadTooLargeError, Downloader
 from app.schemas import (
     DownloadCreateResponse,
     DownloadRequest,
+    FormatsResponse,
     MediaInfoRequest,
     MediaInfoResponse,
     StatusResponse,
@@ -33,13 +37,34 @@ setup_logging()
 SETTINGS = get_settings()
 APP_LOGGER = logging.getLogger("tele_port.app")
 
+limiter = Limiter(key_func=get_remote_address)
 app = FastAPI(title=SETTINGS.app_name)
+app.state.limiter = limiter
 templates = Jinja2Templates(directory="app/templates")
 
 
 @app.on_event("startup")
 async def startup_banner() -> None:
     print("--- TelePort initialized by Shyam ---")
+    
+    # Clean stale temp files from crashes/restarts
+    try:
+        tmp_dir = SETTINGS.tmp_dir
+        cleaned_count = 0
+        for pattern in ["*.mp4", "*.mkv", "*.jpg", "*.png", "*.webp"]:
+            for file_path in tmp_dir.glob(pattern):
+                try:
+                    # Only delete if older than 1 hour (stale)
+                    age_seconds = (datetime.now(timezone.utc).timestamp() - file_path.stat().st_mtime)
+                    if age_seconds > 3600:
+                        file_path.unlink(missing_ok=True)
+                        cleaned_count += 1
+                except Exception as e:
+                    APP_LOGGER.debug(f"Failed to clean {file_path}: {e}")
+        if cleaned_count > 0:
+            APP_LOGGER.info(f"Cleaned {cleaned_count} stale temp files on startup")
+    except Exception as e:
+        APP_LOGGER.warning(f"Failed to cleanup stale temp files: {e}")
 
 
 @dataclass(slots=True)
@@ -111,6 +136,12 @@ async def set_job(
 ) -> None:
     async with jobs_lock:
         state = jobs[job_id]
+
+        # Once cancellation is requested, ignore non-terminal transitions to avoid
+        # progress callbacks racing and moving the job back to active states.
+        if state.cancel_requested and status in {"queued", "downloading", "uploading"}:
+            status = None
+
         if status is not None:
             state.status = status
         if progress is not None:
@@ -125,6 +156,13 @@ async def set_job(
             state.error = error
         if cancel_requested is not None:
             state.cancel_requested = cancel_requested
+
+        if state.cancel_requested and state.status in {"queued", "downloading", "uploading"}:
+            state.status = "canceled"
+            state.stage = "canceled"
+            state.detail = state.detail or "Cancel requested"
+            state.progress = 0
+
         state.touch()
 
 
@@ -164,6 +202,7 @@ async def guard_url_for_ssrf(url: str) -> None:
 
 async def process_job(job_id: str, payload: DownloadRequest) -> None:
     file_path: Path | None = None
+    upload_path: Path | None = None
     thumbnail_path: Path | None = None
     try:
         if await is_job_cancelled(job_id):
@@ -184,12 +223,14 @@ async def process_job(job_id: str, payload: DownloadRequest) -> None:
         def progress_cb(progress: int, detail: str) -> None:
             if is_cancelled_sync():
                 return
+            download_pct = max(0, min(95, progress))
+            mapped = int((download_pct / 95) * 80)
             loop.call_soon_threadsafe(
                 asyncio.create_task,
                 set_job(
                     job_id=job_id,
                     status="downloading",
-                    progress=progress,
+                    progress=mapped,
                     stage="downloading",
                     detail=detail,
                 )
@@ -200,11 +241,14 @@ async def process_job(job_id: str, payload: DownloadRequest) -> None:
             job_id=job_id,
             headers=payload.headers,
             resolution=payload.resolution,
+            format_id=payload.format_id,
+            audio_format_id=payload.audio_format_id,
             progress_cb=progress_cb,
             is_cancelled=is_cancelled_sync,
         )
         file_path = result.file_path
         file_path = apply_filename_override(file_path, payload.file_name)
+        upload_path = file_path
 
         if await is_job_cancelled(job_id):
             raise DownloadCancelledError("Job canceled by user")
@@ -212,7 +256,7 @@ async def process_job(job_id: str, payload: DownloadRequest) -> None:
         await set_job(
             job_id,
             status="uploading",
-            progress=96,
+            progress=80,
             stage="uploading",
             detail="Uploading to destination",
         )
@@ -223,7 +267,7 @@ async def process_job(job_id: str, payload: DownloadRequest) -> None:
             if is_cancelled_sync():
                 return
             upload_pct = max(0, min(100, progress))
-            mapped = 96 + int((upload_pct * 3) / 100)
+            mapped = 80 + int((upload_pct * 20) / 100)
             loop.call_soon_threadsafe(
                 asyncio.create_task,
                 set_job(
@@ -249,7 +293,7 @@ async def process_job(job_id: str, payload: DownloadRequest) -> None:
             await set_job(
                 job_id,
                 status="uploading",
-                progress=96,
+                progress=80,
                 stage="uploading",
                 detail="Downloading and validating thumbnail",
             )
@@ -261,27 +305,31 @@ async def process_job(job_id: str, payload: DownloadRequest) -> None:
             )
 
         if destination == "telegram" and isinstance(uploader, TelegramUploader):
-            upload_file_name = file_path.name
-            force_document = False
-            if telegram_m3u8_mode and file_path.suffix.lower() == ".mp4":
-                upload_file_name = f"{file_path.stem}.mkv"
-                force_document = True
+            if telegram_m3u8_mode and upload_path.suffix.lower() == ".mp4":
+                mkv_path = upload_path.with_suffix(".mkv")
+                if mkv_path.exists():
+                    mkv_path = upload_path.with_name(f"{upload_path.stem}_{uuid.uuid4().hex[:6]}.mkv")
+                shutil.copyfile(upload_path, mkv_path)
+                upload_path = mkv_path
 
             uploaded_url = await uploader.upload(
-                file_path,
+                upload_path,
                 progress_cb=upload_progress_cb,
                 is_cancelled=is_cancelled_sync,
                 thumb_path=thumbnail_path,
-                force_document=force_document,
-                upload_file_name=upload_file_name,
+                force_document=telegram_m3u8_mode,
+                upload_file_name=upload_path.name,
                 use_filename_as_caption=not telegram_m3u8_mode,
             )
         else:
             uploaded_url = await uploader.upload(
-                file_path,
+                upload_path,
                 progress_cb=upload_progress_cb,
                 is_cancelled=is_cancelled_sync,
             )
+
+        if await is_job_cancelled(job_id):
+            raise DownloadCancelledError("Job canceled by user")
 
         await set_job(
             job_id,
@@ -340,6 +388,11 @@ async def process_job(job_id: str, payload: DownloadRequest) -> None:
                 file_path.unlink(missing_ok=True)
             except Exception:
                 APP_LOGGER.warning("Failed cleaning temp file", extra={"path": str(file_path)})
+        if upload_path and upload_path != file_path and upload_path.exists():
+            try:
+                upload_path.unlink(missing_ok=True)
+            except Exception:
+                APP_LOGGER.warning("Failed cleaning upload temp file", extra={"path": str(upload_path)})
 
 
 def _is_m3u8_source(url: str) -> bool:
@@ -370,8 +423,21 @@ async def media_info(payload: MediaInfoRequest) -> MediaInfoResponse:
     return MediaInfoResponse(title=title, is_youtube=is_youtube)
 
 
+@app.post("/formats", response_model=FormatsResponse)
+async def formats(payload: MediaInfoRequest) -> FormatsResponse:
+    url = str(payload.url)
+    await guard_url_for_ssrf(url)
+    try:
+        title, is_youtube = await downloader.probe_media(url=url, headers=payload.headers)
+        format_options = await downloader.extract_formats(url=url, headers=payload.headers)
+    except DownloadFailedError as exc:
+        raise HTTPException(status_code=422, detail=f"Failed to fetch formats: {exc}") from exc
+    return FormatsResponse(title=title, is_youtube=is_youtube, formats=format_options)
+
+
 @app.post("/download", response_model=DownloadCreateResponse)
-async def create_download(payload: DownloadRequest) -> DownloadCreateResponse:
+@limiter.limit("10/minute")
+async def create_download(request: Request, payload: DownloadRequest) -> DownloadCreateResponse:
     url = str(payload.url)
     await guard_url_for_ssrf(url)
     try:
@@ -417,6 +483,10 @@ async def cancel_job(job_id: str) -> dict[str, str]:
             return {"job_id": job_id, "status": state.status}
         state.cancel_requested = True
         state.cancel_event.set()
+        state.status = "canceled"
+        state.stage = "canceled"
+        state.detail = "Cancel requested"
+        state.progress = 0
         state.touch()
     return {"job_id": job_id, "status": "cancel_requested"}
 

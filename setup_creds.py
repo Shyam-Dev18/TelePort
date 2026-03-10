@@ -1,6 +1,7 @@
 # Project: TelePort | Author: Shyam | Version: 1.0.0
 from __future__ import annotations
 
+import argparse
 import json
 import os
 from pathlib import Path
@@ -52,7 +53,18 @@ def generate_google_refresh_token(client_id: str, client_secret: str) -> str:
     return credentials.refresh_token
 
 
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Generate OAuth credentials for TelePort")
+    parser.add_argument(
+        "--google-only",
+        action="store_true",
+        help="Generate only Google refresh token and skip Telegram prompts",
+    )
+    return parser.parse_args()
+
+
 def main() -> None:
+    args = _parse_args()
     load_dotenv()
 
     print("== Google OAuth Refresh Token Setup ==")
@@ -60,20 +72,26 @@ def main() -> None:
     google_client_secret = env_or_prompt("GOOGLE_CLIENT_SECRET", "Google Client Secret")
     google_refresh_token = generate_google_refresh_token(google_client_id, google_client_secret)
 
-    print("\n== Telegram Bot MTProto Config ==")
-    telegram_api_id = int(env_or_prompt("TELEGRAM_API_ID", "Telegram API ID"))
-    telegram_api_hash = env_or_prompt("TELEGRAM_API_HASH", "Telegram API Hash")
-    telegram_bot_token = env_or_prompt("TELEGRAM_BOT_TOKEN", "Telegram Bot Token")
-
     payload = {
         "GOOGLE_CLIENT_ID": google_client_id,
         "GOOGLE_CLIENT_SECRET": google_client_secret,
         "GOOGLE_REFRESH_TOKEN": google_refresh_token,
-        "TELEGRAM_API_ID": str(telegram_api_id),
-        "TELEGRAM_API_HASH": telegram_api_hash,
-        "TELEGRAM_BOT_TOKEN": telegram_bot_token,
-        "TELEGRAM_TARGET_CHAT": os.getenv("TELEGRAM_TARGET_CHAT", "me"),
     }
+
+    if not args.google_only:
+        print("\n== Telegram Bot MTProto Config ==")
+        telegram_api_id = int(env_or_prompt("TELEGRAM_API_ID", "Telegram API ID"))
+        telegram_api_hash = env_or_prompt("TELEGRAM_API_HASH", "Telegram API Hash")
+        telegram_bot_token = env_or_prompt("TELEGRAM_BOT_TOKEN", "Telegram Bot Token")
+
+        payload.update(
+            {
+                "TELEGRAM_API_ID": str(telegram_api_id),
+                "TELEGRAM_API_HASH": telegram_api_hash,
+                "TELEGRAM_BOT_TOKEN": telegram_bot_token,
+                "TELEGRAM_TARGET_CHAT": os.getenv("TELEGRAM_TARGET_CHAT", "me"),
+            }
+        )
 
     out_file = Path("generated_credentials.json")
     out_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
