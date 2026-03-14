@@ -83,17 +83,10 @@
       background: transparent;
       border-radius: 999px;
       transform: translate(-50%, -50%);
-      animation: spin 28s linear infinite;
-      /* Promote to its own GPU compositor layer so the spin never touches
-         the main-thread layout and the backdrop-filter (now removed) does
-         not have to re-sample on every frame. */
-      will-change: transform;
-      /* Smooth out the size / position tweaks made by randomizePageOrbits */
-      transition: width 1.8s ease, height 1.8s ease;
     }
     .orbit-ring.r1 { width: 950px; height: 950px; }
-    .orbit-ring.r2 { width: 740px; height: 740px; animation-direction: reverse; animation-duration: 22s; }
-    .orbit-ring.r3 { width: 520px; height: 520px; animation-duration: 18s; }
+    .orbit-ring.r2 { width: 740px; height: 740px; }
+    .orbit-ring.r3 { width: 520px; height: 520px; }
     .platform-chip {
       position: absolute;
       width: 120px;
@@ -156,12 +149,6 @@
       border: 0;
       background: transparent;
       transform: translate(-50%, -50%);
-      animation: spin 16s linear infinite;
-      will-change: transform;
-    }
-    .input-ring.rev {
-      animation-direction: reverse;
-      animation-duration: 12s;
     }
     .input-chip {
       position: absolute;
@@ -182,10 +169,6 @@
     .input-chip.x { right: 30%; bottom: 0%; background: linear-gradient(150deg, #9ca3af, #111827); }
     .input-chip.yt { left: 35%; top: -8%; background: linear-gradient(150deg, #ff6b6b, #d90429); }
 
-    @keyframes spin {
-      from { transform: translate(-50%, -50%) rotate(0deg); }
-      to { transform: translate(-50%, -50%) rotate(360deg); }
-    }
 
     @media (max-width: 640px) {
       .orbit-background { opacity: 0.2; }
@@ -373,50 +356,6 @@
       } else {
         statusText.classList.add("text-slate-700");
       }
-    }
-
-    function rand(min, max) {
-      return Math.random() * (max - min) + min;
-    }
-
-    function randomizePageOrbits() {
-      const rings = document.querySelectorAll(".orbit-ring");
-      const baseSizes = [900, 700, 520];
-      rings.forEach((ring, idx) => {
-        const size = Math.max(320, baseSizes[idx] + rand(-130, 130));
-        ring.style.width = `${size}px`;
-        ring.style.height = `${size}px`;
-        ring.style.left = `${rand(34, 66)}%`;
-        ring.style.top = `${rand(48, 70)}%`;
-        // Do NOT touch animationDuration / animationDirection here.
-        // Changing those properties mid-run resets the keyframe position to 0°,
-        // causing a jarring "snap" on every interval tick.
-      });
-
-      const chips = document.querySelectorAll(".orbit-ring.r1 .platform-chip");
-      chips.forEach((chip) => {
-        chip.style.left = `${rand(6, 84)}%`;
-        chip.style.top = `${rand(6, 84)}%`;
-        chip.style.right = "auto";
-        chip.style.bottom = "auto";
-      });
-    }
-
-    function randomizeInputOrbits() {
-      const rings = document.querySelectorAll(".input-ring");
-      rings.forEach((ring) => {
-        ring.style.width = `calc(100% + ${rand(24, 110).toFixed(0)}px)`;
-        ring.style.height = `${rand(100, 170).toFixed(0)}px`;
-        // Do NOT touch animationDuration / animationDirection here.
-      });
-
-      const chips = document.querySelectorAll(".input-orbit-layer .input-chip");
-      chips.forEach((chip) => {
-        chip.style.left = `${rand(6, 88)}%`;
-        chip.style.top = `${rand(2, 78)}%`;
-        chip.style.right = "auto";
-        chip.style.bottom = "auto";
-      });
     }
 
     function clearPolling() {
@@ -810,12 +749,6 @@
     restoreDraft();
     restoreLastStatus();
     toggleThumbnailVisibility();
-    randomizePageOrbits();
-    randomizeInputOrbits();
-    setInterval(() => {
-      randomizePageOrbits();
-      randomizeInputOrbits();
-    }, 16000);
     setRunningState(false);
     if (urlInput.value.trim()) {
       refreshMediaInfo();
